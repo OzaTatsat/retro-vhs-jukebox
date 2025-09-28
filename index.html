@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Retro MP3 Player — Neon VHS Jukebox</title>
+<style>
+  /* ---------- base & layout ---------- */
+  :root{
+    --neon-pink: #ff69b4;
+    --neon-blue: #00bfff;
+    --glass: rgba(12,12,22,0.45);
+  }
+  html,body{height:100%;margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans JP",sans-serif;background:#07020b;color:#e7e7e7;overflow:hidden}
+  #app{position:relative;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:18px}
+  main{width:100%;max-width:1100px;background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));border-radius:14px;padding:18px;backdrop-filter: blur(8px);box-shadow:0 10px 40px rgba(0,0,0,0.7);display:grid;grid-template-columns:1fr 360px;gap:18px;z-index:10}
+  @media (max-width:880px){ main{grid-template-columns:1fr; padding:12px} }
+
+  /* ---------- big visual canvas (behind UI) ---------- */
+  #bg-wrap{position:fixed;inset:0;z-index:-2;overflow:hidden}
+  canvas{display:block;width:100%;height:100%;}
+
+  /* ---------- VHS overlay layers ---------- */
+  .vhs-overlay { position:fixed;inset:0;pointer-events:none; z-index:20; mix-blend-mode:overlay }
+  .scanlines{position:absolute;inset:0;background:
+    repeating-linear-gradient(0deg, rgba(255,255,255,0.03) 0px, rgba(0,0,0,0.04) 1px, transparent 3px);
+    opacity:0.08; animation:scanJitter 0.2s steps(2) infinite; }
+  @keyframes scanJitter { 0%{transform:translateX(0)}50%{transform:translateX(-1px)}100%{transform:translateX(1px)} }
+
+  /* ---------- camcorder UI (REC/PLAY/BATT) ---------- */
+  .cam-ui{position:fixed;top:10px;left:12px;z-index:30;color:#fff;font-family:monospace;pointer-events:none}
+  .rec{display:flex;gap:8px;align-items:center}
+  .dot{width:10px;height:10px;border-radius:50%;background:#ff4d4d;box-shadow:0 0 8px rgba(255,77,77,0.9);animation:recBlink 1.2s infinite}
+  @keyframes recBlink{0%,60%,100%{opacity:1}30%{opacity:0.35}}
+  .cam-meta{opacity:0.85;font-size:14px;margin-top:6px}
+  .cam-right{position:fixed;top:10px;right:14px;z-index:30;color:#fff;display:flex;gap:10px;align-items:center;font-family:monospace;font-size:13px;pointer-events:none}
+
+  /* ---------- tracking lines (rare) ---------- */
+  #tracking-lines{position:fixed;inset:0;z-index:25;pointer-events:none;opacity:0}
+  #tracking-lines.active{animation:trackingGl 0.9s steps(3) forwards}
+  @keyframes trackingGl {
+    0%{opacity:0;transform:translateY(100vh)}
+    20%{opacity:0.6;transform:translateY(60vh)}
+    50%{opacity:0.9;transform:translateY(30vh)}
+    80%{opacity:0.6;transform:translateY(-10vh)}
+    100%{opacity:0;transform:translateY(-100vh)}
+  }
+
+  /* ---------- left: album area ---------- */
+  .player-left{display:flex;flex-direction:column;align-items:center;gap:12px}
+  .title{font-weight:700;font-size:20px;letter-spacing:1px;color:var(--neon-pink);text-shadow:0 0 6px rgba(255,105,180,0.6),0 0 18px rgba(255,105,180,0.25)}
+  .subtitle{font-size:13px;color:rgba(255,255,255,0.7);letter-spacing:0.6px}
+  .album-frame{width:100%;max-width:520px;aspect-ratio:1/1;border-radius:12px;position:relative;overflow:hidden;background:linear-gradient(135deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));display:flex;align-items:center;justify-content:center}
+  .neon-border{position:absolute;inset:8px;border-radius:10px;pointer-events:none;box-shadow:0 0 18px rgba(255,105,180,0.12),0 0 32px rgba(0,191,255,0.07);border:1px solid rgba(255,255,255,0.05)}
+  .neon-frame{position:absolute;inset:14px;border-radius:8px;pointer-events:none;border:2px solid rgba(255,105,180,0.14);box-shadow:0 0 20px rgba(255,105,180,0.14);filter:drop-shadow(0 0 8px rgba(0,191,255,0.06))}
+  .crt-overlay{position:absolute;inset:0;background:
+    repeating-linear-gradient(0deg, rgba(255,255,255,0.03) 0px, rgba(0,0,0,0.04) 1px, transparent 3px);
+    mix-blend-mode:overlay;opacity:0.25;pointer-events:none}
+  .album-img{position:relative;width:86%;height:86%;object-fit:cover;border-radius:6px;transition:opacity 420ms ease, transform 420ms ease}
+
+  /* softened glitch frames when changing (no bright cyan flash) */
+  .glitch-scan{position:absolute;inset:0;pointer-events:none;mix-blend-mode:screen;opacity:0;transition:opacity 180ms}
+  .glitch-scan.active{opacity:0.38;animation:glitchTrace 280ms steps(3) 1}
+  @keyframes glitchTrace {
+    0% { transform: translateX(0) skewX(0deg); filter: hue-rotate(0deg) }
+    30% { transform: translateX(-4px) skewX(2deg); filter: hue-rotate(-6deg) }
+    60% { transform: translateX(3px) skewX(-2deg); filter: hue-rotate(6deg) }
+    100% { transform: translateX(0) skewX(0deg); filter: hue-rotate(0deg) }
+  }
+
+  /* ---------- right: playlist ---------- */
+  .player-right{height:100%;display:flex;flex-direction:column;gap:12px}
+  .playlist{overflow:auto;padding:10px;border-radius:10px;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.04)}
+  .act-header{font-family:monospace;color:var(--neon-blue);font-size:12px;padding:8px 6px}
+  .track-item{display:flex;justify-content:space-between;align-items:center;padding:10px;border-radius:8px;cursor:pointer}
+  .track-item:hover{background:rgba(255,255,255,0.03)}
+  .track-item.active{background:linear-gradient(90deg, rgba(255,105,180,0.06), rgba(0,191,255,0.04));outline:1px solid rgba(255,255,255,0.04)}
+
+  /* ---------- controls ---------- */
+  .controls{display:flex;gap:12px;align-items:center;justify-content:center;padding:8px}
+  button.ctrl{background:transparent;border:1px solid rgba(255,255,255,0.06);color:#eaeaea;padding:10px;border-radius:10px;font-size:16px;min-width:48px}
+  button.ctrl:active{transform:translateY(1px)}
+  .seek{width:100%;height:6px;background:rgba(255,255,255,0.04);border-radius:6px;overflow:hidden}
+  .seek > .fill{height:100%;width:0;background:linear-gradient(90deg,var(--neon-pink),var(--neon-blue));transition:width 120ms linear}
+
+  /* act title card */ 
+  .act-title-card{position:fixed;left:50%;transform:translateX(-50%);bottom:12%;z-index:26;padding:12px 18px;border-radius:8px;background:rgba(0,0,0,0.5);backdrop-filter:blur(6px);text-align:center;opacity:0;pointer-events:none}
+  .act-title-card h3{margin:0;font-family:'Noto Sans JP',sans-serif;font-size:22px;color:#fff;text-shadow:0 0 12px rgba(255,105,180,0.4)}
+  .act-title-card p{margin:0;font-family:monospace;color:#dfefff;font-size:12px;letter-spacing:0.12em}
+
+  /* small screens adjustments */
+  @media (max-width:880px){
+    .player-right{max-height:45vh;overflow:auto}
+    .album-frame{max-width:100%;aspect-ratio:1/1;width:92%}
+    main{grid-template-columns:1fr}
+  }
+
+  /* scanline sweep for song-change (applied to body) */
+  body.scanline-sweep::after{
+    content: "";
+    position: fixed;
+    left: 0; top: -120%;
+    width: 100%; height: 120%;
+    background: linear-gradient(180deg, rgba(255,255,255,0.07) 0%, rgba(255,255,255,0.02) 6%, rgba(255,255,255,0.00) 12%);
+    mix-blend-mode: overlay;
+    pointer-events: none;
+    z-index: 60;
+    animation: scanSweepShort 420ms ease-in-out;
+  }
+  @keyframes scanSweepShort {
+    0% { top: -120%; opacity: 0.75 }
+    55% { top: 30%; opacity: 0.45 }
+    100% { top: 120%; opacity: 0 }
+  }
+
+  /* CRT global color grade */
+  .grade{filter:sepia(0.06) hue-rotate(-4deg) saturate(0.95) contrast(1.02);}
+</style>
+</head>
+<body class="grade">
+  <div id="bg-wrap"><canvas id="bg-canvas"></canvas></div>
+
+  <!-- VHS overlays -->
+  <div class="vhs-overlay">
+    <div class="scanlines"></div>
+  </div>
+
+  <!-- tracking lines -->
+  <div id="tracking-lines"></div>
+
+  <!-- camcorder UI -->
+  <div class="cam-ui">
+    <div class="rec"><div class="dot"></div><div style="font-weight:700">REC</div></div>
+    <div class="cam-meta" id="play-ind">PLAY ▶</div>
+  </div>
+  <div class="cam-right">
+    <div id="battery">🔋 88%</div>
+  </div>
+
+  <div id="app">
+    <main>
+      <!-- LEFT: album + visual -->
+      <section class="player-left">
+        <div>
+          <div class="title" id="track-title">Track Title</div>
+          <div class="subtitle" id="track-artist">Artist</div>
+        </div>
+
+        <div class="album-frame" id="album-frame">
+          <div class="neon-border"></div>
+          <div class="neon-frame"></div>
+          <img id="album-img" class="album-img" src="" alt="cover">
+          <div class="crt-overlay"></div>
+          <div class="glitch-scan" id="glitch-scan"></div>
+        </div>
+
+        <div style="width:100%;max-width:520px;margin-top:6px" class="controls">
+          <button class="ctrl" id="prev-btn">⏮</button>
+          <button class="ctrl" id="play-btn">▶</button>
+          <button class="ctrl" id="next-btn">⏭</button>
+          <div style="flex:1;margin-left:8px">
+            <div class="seek" id="seek"><div class="fill" id="seek-fill"></div></div>
+          </div>
+        </div>
+        <div style="width:100%;max-width:520px;display:flex;gap:10px;align-items:center;justify-content:flex-end;margin-top:6px">
+          <input id="volume" type="range" min="0" max="1" step="0.01" value="1" style="width:120px">
+        </div>
+      </section>
+
+      <!-- RIGHT: playlist -->
+      <aside class="player-right">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div style="font-weight:700">Playlist</div>
+          <div style="font-size:12px;color:rgba(255,255,255,0.6)">5 Acts • 29 tracks</div>
+        </div>
+
+        <div class="playlist" id="playlist"></div>
+      </aside>
+    </main>
+  </div>
+
+  <!-- act title card -->
+  <div class="act-title-card" id="act-title-card"><h3 id="act-title-jp">始まりの音</h3><p id="act-title-en">The Sound of the Beginning</p></div>
+
+<script>
+/* ----------------- Playlist data (your exact filenames) ----------------- */
+const playlist = [
+  { id:1, title:"Tank!", artist:"The Seatbelts", act:1, file:"songs/Tank!.mp3", art:"coverimg/Tank!.png" },
+  { id:2, title:"Blue Bird", artist:"Ikimono Gakari", act:1, file:"songs/Blue Bird.mp3", art:"coverimg/BlueBird.png" },
+  { id:3, title:"Hikaru Nara", artist:"Goose house", act:1, file:"songs/Hikaru Nara.mp3", art:"coverimg/HikaruNara.png" },
+  { id:4, title:"Kiseki", artist:"Nirgilis", act:1, file:"songs/kiseki.mp3", art:"coverimg/Kiseki.png" },
+  { id:5, title:"Snow halation", artist:"μ’s", act:1, file:"songs/Snow halation.mp3", art:"coverimg/SnowHalation.png" },
+  { id:6, title:"Nandemonaiya", artist:"RADWIMPS", act:1, file:"songs/Nandemonaiya.mp3", art:"coverimg/Nandemonaiya.png" },
+  { id:7, title:"Kaibutsu", artist:"YOASOBI", act:2, file:"songs/Kaibutsu.mp3", art:"coverimg/Kaibutsu.png" },
+  { id:8, title:"Resonance", artist:"T.M.Revolution", act:2, file:"songs/Resonance.mp3", art:"coverimg/Resonance.png" },
+  { id:9, title:"Shiki no Uta", artist:"MINMI", act:2, file:"songs/Shiki no Uta.mp3", art:"coverimg/ShikinoUta.png" },
+  { id:10, title:"Shinunoga E-Wa", artist:"Fujii Kaze", act:2, file:"songs/Shinunoga E-Wa.mp3", art:"coverimg/Shino.png" },
+  { id:11, title:"Plastic Love", artist:"Mariya Takeuchi", act:2, file:"songs/Plastic Love.mp3", art:"coverimg/PlasticLove.png" },
+  { id:12, title:"Stay with Me", artist:"Miki Matsubara", act:2, file:"songs/Stay with Me.mp3", art:"coverimg/Staywithme.png" },
+  { id:13, title:"Nightcall", artist:"Kavinsky", act:3, file:"songs/Nightcall.mp3", art:"coverimg/Nightcall.png" },
+  { id:14, title:"Oblivion", artist:"Grimes", act:3, file:"songs/Oblivion.mp3", art:"coverimg/Oblivion.png" },
+  { id:15, title:"Genesis", artist:"Armors", act:3, file:"songs/Genesis.mp3", art:"coverimg/Genesis.png" },
+  { id:16, title:"Polyrhythm", artist:"Perfume", act:3, file:"songs/Polyrhythm.mp3", art:"coverimg/Poly.png" },
+  { id:17, title:"Pretender", artist:"Official Hige Dandism", act:4, file:"songs/Pretender.mp3", art:"coverimg/Pretender.png" },
+  { id:18, title:"Don't Know Why", artist:"Norah Jones", act:4, file:"songs/Don't Know Why.mp3", art:"coverimg/Dontknowwhy.png" },
+  { id:19, title:"Fly Me to the Moon", artist:"Frank Sinatra", act:4, file:"songs/Fly Me To The Moon.mp3", art:"coverimg/Flyme.png" },
+  { id:20, title:"Photograph", artist:"Ed Sheeran", act:4, file:"songs/Photograph.mp3", art:"coverimg/Photograph.png" },
+  { id:21, title:"Thinking Out Loud", artist:"Ed Sheeran", act:4, file:"songs/Thinking Out Loud.mp3", art:"coverimg/ThinkingLoud.png" },
+  { id:22, title:"Slow Dancing in a Burning Room", artist:"John Mayer", act:4, file:"songs/Slow Dancing in a Burning Room.mp3", art:"coverimg/Slowdancing.png" },
+  { id:23, title:"The Blower's Daughter", artist:"Damien Rice", act:4, file:"songs/The Blower's Daughter.mp3", art:"coverimg/blower.png" },
+  { id:24, title:"Someone Like You", artist:"Adele", act:5, file:"songs/Someone Like You.mp3", art:"coverimg/Someonelikeyou.png" },
+  { id:25, title:"Somewhere Only We Know", artist:"Keane", act:5, file:"songs/Somewhere Only We Know.mp3", art:"coverimg/Somewhere.png" },
+  { id:26, title:"The Scientist", artist:"Coldplay", act:5, file:"songs/The Scientist.mp3", art:"coverimg/Scientist.png" },
+  { id:27, title:"Yellow", artist:"Coldplay", act:5, file:"songs/Yellow.mp3", art:"coverimg/Yellow.png" },
+  { id:28, title:"You're Beautiful", artist:"James Blunt", act:5, file:"songs/You're Beautiful.mp3", art:"coverimg/Beautiful.png" },
+  { id:29, title:"Koi no Uta", artist:"Yunomi ft. Tsukasa", act:5, file:"songs/Koi no Uta.mp3", art:"coverimg/KoinoUta.png" }
+];
+
+/* ----------------- UI refs ----------------- */
+const playlistEl = document.getElementById('playlist');
+const titleEl = document.getElementById('track-title');
+const artistEl = document.getElementById('track-artist');
+const albumImgEl = document.getElementById('album-img');
+const playBtn = document.getElementById('play-btn');
+const prevBtn = document.getElementById('prev-btn');
+const nextBtn = document.getElementById('next-btn');
+const seekFill = document.getElementById('seek-fill');
+const volumeEl = document.getElementById('volume');
+const playInd = document.getElementById('play-ind');
+const glitchScan = document.getElementById('glitch-scan');
+const actTitleCard = document.getElementById('act-title-card');
+const actTitleJP = document.getElementById('act-title-jp');
+const actTitleEN = document.getElementById('act-title-en');
+const trackingLines = document.getElementById('tracking-lines');
+
+/* ----------------- Audio + analyser (single ctx) ----------------- */
+const audio = new Audio();
+audio.preload = "none"; // do not preload all
+let audioCtx, analyser, sourceNode;
+let isPlaying = false;
+let currentIndex = 0;
+let currentAct = 0;
+
+/* create audio context on user gesture */
+function ensureAudioCtx(){
+  if(!audioCtx){
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 128;
+  }
+  if(sourceNode) sourceNode.disconnect();
+  sourceNode = audioCtx.createMediaElementSource(audio);
+  sourceNode.connect(analyser);
+  analyser.connect(audioCtx.destination);
+}
+
+/* ----------------- build playlist DOM ----------------- */
+function buildPlaylist(){
+  let lastAct = null;
+  playlist.forEach((t, i) => {
+    if(t.act !== lastAct){
+      const header = document.createElement('div');
+      header.className = 'act-header';
+      header.textContent = `— Act ${t.act} —`;
+      playlistEl.appendChild(header);
+      lastAct = t.act;
+    }
+    const item = document.createElement('div');
+    item.className = 'track-item';
+    item.dataset.index = i;
+    item.innerHTML = `<div>
+      <div style="font-weight:700">${t.title}</div>
+      <div style="font-size:12px;color:rgba(255,255,255,0.6)">${t.artist}</div>
+    </div>
+    <div style="font-size:12px;color:var(--neon-pink)">${formatActTag(t.act)}</div>`;
+    item.addEventListener('click', ()=>selectTrack(i));
+    playlistEl.appendChild(item);
+  });
+}
+function formatActTag(act){
+  const map = {1:'Anime Energy',2:'City Pop',3:'Electronic',4:'Ballads',5:'Finale'};
+  return map[act] || `Act ${act}`;
+}
+
+/* ----------------- select/load/play logic ----------------- */
+function selectTrack(idx){
+  if(idx === currentIndex) return playToggle();
+  triggerImageGlitch();
+  loadTrack(idx);
+  playTrack();
+}
+function loadTrack(idx){
+  const track = playlist[idx];
+  audio.src = track.file;
+  titleEl.textContent = track.title;
+  artistEl.textContent = track.artist;
+  // lazy set album image (no path changes)
+  albumImgEl.style.opacity = 0;
+  albumImgEl.src = track.art;
+  albumImgEl.onload = ()=>{ albumImgEl.style.opacity = 1; };
+  currentIndex = idx;
+  highlightPlaylist();
+  updateAct(track.act);
+}
+function playTrack(){
+  if(!audioCtx) ensureAudioCtx();
+  audio.play().then(()=>{ isPlaying = true; playBtn.textContent = '❚❚'; playInd.textContent='PLAY ▶';})
+    .catch(()=>{ /* autoplay may be blocked; rely on user click */ });
+}
+function pauseTrack(){
+  audio.pause();
+  isPlaying = false; playBtn.textContent = '▶'; playInd.textContent='PAUSE ▮▮';
+}
+function playToggle(){ isPlaying ? pauseTrack() : playTrack(); }
+playBtn.addEventListener('click', ()=>{ if(!audioCtx) ensureAudioCtx(); playToggle(); });
+prevBtn.addEventListener('click', ()=>{ selectTrack((currentIndex-1+playlist.length)%playlist.length); });
+nextBtn.addEventListener('click', ()=>{ selectTrack((currentIndex+1)%playlist.length); });
+volumeEl.addEventListener('input', ()=> audio.volume = volumeEl.value);
+
+/* update seek fill */
+audio.addEventListener('timeupdate', ()=>{
+  if(audio.duration) seekFill.style.width = `${(audio.currentTime/audio.duration)*100}%`;
+});
+audio.addEventListener('ended', ()=>{ selectTrack((currentIndex+1)%playlist.length); });
+
+/* highlight playlist */
+function highlightPlaylist(){
+  document.querySelectorAll('.track-item').forEach(node=>{
+    node.classList.toggle('active', parseInt(node.dataset.index) === currentIndex);
+  });
+}
+
+/* ----------------- act transitions + title card sequencing ----------------- */
+const actMeta = {
+  1: { jp:"始まりの音", en:"The Sound of the Beginning", bg:"act-1" },
+  2: { jp:"夢の中の街", en:"The City Inside a Dream", bg:"act-2" },
+  3: { jp:"デジタルの鼓動", en:"Digital Pulse", bg:"act-3" },
+  4: { jp:"燃える心の歌", en:"Songs of a Burning Heart", bg:"act-4" },
+  5: { jp:"星の彼方へ", en:"To Beyond the Stars", bg:"act-5" }
+};
+function updateAct(actNum){
+  if(actNum === currentAct) return;
+  currentAct = actNum;
+  // show title card sequence
+  actTitleJP.textContent = actMeta[actNum].jp || "";
+  actTitleEN.textContent = actMeta[actNum].en || "";
+  showActTitleCard();
+  // (visual changes can be added: backgrounds, particle presets, etc.)
+}
+function showActTitleCard(){
+  actTitleCard.style.transition = 'none';
+  actTitleCard.style.opacity = 0;
+  setTimeout(()=>{ actTitleCard.style.transition = 'opacity 600ms ease'; actTitleCard.style.opacity = 1; }, 40);
+  setTimeout(()=>{ actTitleCard.style.opacity = 0; }, 5600); // 5.6s visible
+}
+
+/* ----------------- album art glitch + scanline sweep (safe) ----------------- */
+const glitchDuration = 260;
+function triggerImageGlitch(){
+  // album-art glitch overlay (soft)
+  glitchScan.classList.add('active');
+  setTimeout(()=>glitchScan.classList.remove('active'), glitchDuration);
+
+  // small scanline sweep across the screen (safe, subtle)
+  document.body.classList.add('scanline-sweep');
+  setTimeout(()=>document.body.classList.remove('scanline-sweep'), 440);
+}
+
+/* ----------------- tracking lines (rare) ----------------- */
+function fireTrackingLines(){
+  trackingLines.classList.add('active');
+  setTimeout(()=>trackingLines.classList.remove('active'), 900);
+}
+(function trackingScheduler(){
+  const rand = 20000 + Math.random()*10000; // 20-30s
+  setTimeout(()=>{ fireTrackingLines(); trackingScheduler(); }, rand);
+})();
+
+/* ----------------- Canvas visuals + beat sync + softer chroma overlay ----------------- */
+const canvas = document.getElementById('bg-canvas');
+const ctx = canvas.getContext('2d');
+let DPR = Math.max(1, window.devicePixelRatio || 1);
+function resize(){ canvas.width = innerWidth * DPR; canvas.height = innerHeight * DPR; canvas.style.width = innerWidth+'px'; canvas.style.height = innerHeight+'px'; ctx.setTransform(DPR,0,0,DPR,0,0); }
+window.addEventListener('resize', debounce(resize,150));
+resize();
+
+let particles = [];
+let particleCount = innerWidth < 700 ? 48 : 120;
+function createParticles(){
+  particles = [];
+  for(let i=0;i<particleCount;i++){
+    particles.push({
+      x: Math.random()*innerWidth,
+      y: Math.random()*innerHeight,
+      baseR: Math.random()*2+0.6,
+      r: Math.random()*2+0.6,
+      dx: (Math.random()-0.5)*0.8,
+      dy: (Math.random()-0.5)*0.8,
+      hue: Math.random()*360
+    });
+  }
+}
+createParticles();
+
+/* audio analyser setup (if audioCtx exists) */
+let freqData = null;
+function ensureAnalyser(){ if(!audioCtx) { ensureAudioCtx(); } if(analyser) freqData = new Uint8Array(analyser.frequencyBinCount); }
+
+/* draw loop */
+function draw(){
+  ctx.clearRect(0,0,innerWidth,innerHeight);
+  // subtle gradient background
+  const g = ctx.createLinearGradient(0,0,innerWidth,innerHeight);
+  g.addColorStop(0,'rgba(10,4,20,0.95)');
+  g.addColorStop(1,'rgba(2,6,18,0.98)');
+  ctx.fillStyle = g; ctx.fillRect(0,0,innerWidth,innerHeight);
+
+  // beat-based pulse
+  let pulse = 1;
+  if(analyser && freqData){
+    analyser.getByteFrequencyData(freqData);
+    let avg = freqData.reduce((a,b)=>a+b,0)/freqData.length;
+    pulse = 0.6 + (avg/255)*1.6; // keep values friendly for mobile
+  }
+
+  // particles
+  particles.forEach(p=>{
+    const r = p.baseR * pulse;
+    ctx.beginPath();
+    ctx.fillStyle = `hsl(${p.hue}, 85%, ${45 + 20*(pulse-0.6)}%)`;
+    ctx.shadowColor = ctx.fillStyle;
+    ctx.shadowBlur = 10 * pulse;
+    ctx.arc(p.x, p.y, r, 0, Math.PI*2);
+    ctx.fill();
+    p.x += p.dx * (0.6 + pulse*0.6);
+    p.y += p.dy * (0.6 + pulse*0.6);
+    if(p.x < -20) p.x = innerWidth + 20; if(p.x > innerWidth+20) p.x = -20;
+    if(p.y < -20) p.y = innerHeight + 20; if(p.y > innerHeight+20) p.y = -20;
+  });
+
+  // softer chroma overlay when glitch active (no canvas self-draw)
+  if(glitchScan.classList.contains('active')){
+    ctx.save();
+    ctx.globalCompositeOperation = 'screen';
+    ctx.fillStyle = 'rgba(255,105,180,0.045)'; // warm magenta wash
+    ctx.fillRect(0,0,innerWidth,innerHeight);
+    ctx.fillStyle = 'rgba(0,191,255,0.03)'; // cool cyan wash (low alpha)
+    ctx.fillRect(0,0,innerWidth,innerHeight);
+    ctx.restore();
+  }
+
+  requestAnimationFrame(draw);
+}
+draw();
+
+/* ----------------- UI initialization + helpers ----------------- */
+function init(){
+  buildPlaylist();
+  loadTrack(0);
+
+  // show first act title
+  updateAct(playlist[0].act);
+
+  // lazy-create analyser on first play
+  document.addEventListener('click', function firstTouch(){
+    if(!audioCtx){ ensureAudioCtx(); }
+    document.removeEventListener('click', firstTouch);
+  });
+
+  // pre-cache album images (but not heavy)
+  playlist.forEach(p=>{ const i=new Image(); i.src = p.art; });
+
+  highlightPlaylist();
+}
+init();
+
+/* ----------------- utility helpers ----------------- */
+function debounce(fn,wait){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a),wait); }; }
+
+/* small convenience: loadTrack but keep analyser reuse */
+function loadTrack(idx){
+  const tr = playlist[idx];
+  audio.pause(); audio.src = tr.file;
+  audio.currentTime = 0;
+  titleEl.textContent = tr.title;
+  artistEl.textContent = tr.artist;
+  albumImgEl.style.opacity = 0;
+  albumImgEl.src = tr.art;
+  albumImgEl.onload = ()=> albumImgEl.style.opacity = 1;
+  currentIndex = idx;
+  highlightPlaylist();
+  updateAct(tr.act);
+  // ensure analyser is connected (when user plays)
+  if(audioCtx && !sourceNode) ensureAudioCtx();
+}
+
+/* small helper to show camera battery flicker over time */
+(function batteryFlicker(){
+  const el = document.getElementById('battery');
+  setInterval(()=>{ el.textContent = `🔋 ${78 + Math.floor(Math.random()*20)}%`; }, 6000);
+})();
+
+/* show tracking-lines visuals (simple lines) */
+(function injectTrackingLines(){
+  const container = trackingLines;
+  container.innerHTML = '';
+  const stripeCount = 6;
+  for(let i=0;i<stripeCount;i++){
+    const d = document.createElement('div');
+    d.style.position='absolute';
+    d.style.left='0';
+    d.style.width='100%';
+    d.style.height = `${3 + Math.random()*4}px`;
+    d.style.top = `${Math.random()*100}%`;
+    d.style.background = 'linear-gradient(90deg, rgba(255,255,255,0.06), rgba(0,0,0,0.2))';
+    container.appendChild(d);
+  }
+})();
+
+/* autoplay-safe: resume audio context on play */
+audio.addEventListener('play', ()=>{
+  if(!audioCtx) ensureAudioCtx();
+  if(audioCtx.state === 'suspended') audioCtx.resume();
+  // connect analyser data buffer
+  freqData = new Uint8Array(analyser.frequencyBinCount);
+});
+
+/* ensure clicking a playlist item triggers play */
+playlistEl.addEventListener('click', (e)=>{
+  const item = e.target.closest('.track-item');
+  if(item) selectTrack(parseInt(item.dataset.index));
+});
+
+/* subtle UX: press space to toggle */
+document.addEventListener('keydown', (e)=>{
+  if(e.code === 'Space'){ e.preventDefault(); playToggle(); }
+});
+
+/* expose for debugging if you want: window.playlist = playlist; */
+</script>
+</body>
+</html>
